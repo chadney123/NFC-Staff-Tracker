@@ -1,19 +1,20 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <link rel="manifest" href="manifest.json">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="theme-color" content="#2ecc71">
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>NFC Attendance</title>
+    
+    <link rel="manifest" href="manifest.json">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#2ecc71">
+
     <style>
-        /* Base state is Green */
         body { 
             transition: background-color 0.6s ease; 
             background-color: #2ecc71; 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            font-family: 'Segoe UI', system-ui, sans-serif; 
             display: flex; 
             flex-direction: column; 
             align-items: center; 
@@ -22,23 +23,13 @@
             margin: 0; 
             color: white;
             text-align: center;
+            overflow: hidden;
         }
-        /* Active session state is Light Amber */
-        .amber { 
-            background-color: #f39c12 !important; 
-        }
-        #status { 
-            font-size: 1.8rem; 
-            padding: 20px;
-            text-shadow: 1px 1px 4px rgba(0,0,0,0.2);
-        }
-        #sub-status {
-            font-size: 1rem;
-            opacity: 0.8;
-            margin-top: 10px;
-        }
+        .amber { background-color: #f39c12 !important; }
+        #status { font-size: 2rem; font-weight: bold; padding: 0 20px; }
+        #sub-status { font-size: 1rem; opacity: 0.9; margin-top: 15px; }
         button { 
-            padding: 15px 40px; 
+            padding: 18px 45px; 
             font-size: 1.2rem; 
             cursor: pointer; 
             border: none; 
@@ -46,51 +37,77 @@
             background: white;
             color: #2ecc71;
             font-weight: bold;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
         }
+        #lock-indicator { position: fixed; bottom: 20px; font-size: 0.8rem; opacity: 0.6; }
     </style>
 </head>
 <body>
+
     <div id="status">System Standby</div>
-    <div id="sub-status">Tap the button to enable NFC polling</div>
+    <div id="sub-status">Ready to initialize kiosk mode</div>
     <br>
-    <button id="startBtn">Start System</button>
+    <button id="startBtn">Initialize System</button>
+    <div id="lock-indicator">Wake Lock: Inactive</div>
 
     <script>
         const body = document.body;
         const statusDisplay = document.getElementById('status');
         const subStatus = document.getElementById('sub-status');
         const startBtn = document.getElementById('startBtn');
+        const lockIndicator = document.getElementById('lock-indicator');
         
         let activeSessionTagId = null; 
         let isLocked = false;
+        let wakeLock = null;
 
+        // 1. PWA Service Worker Registration
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js');
+        }
+
+        // 2. Wake Lock Function (Keeps screen on)
+        async function requestWakeLock() {
+            try {
+                wakeLock = await navigator.wakeLock.request('screen');
+                lockIndicator.innerText = "Wake Lock: Active (Screen stays on)";
+                wakeLock.addEventListener('release', () => {
+                    lockIndicator.innerText = "Wake Lock: Released";
+                });
+            } catch (err) {
+                lockIndicator.innerText = `Wake Lock Error: ${err.message}`;
+            }
+        }
+
+        // 3. Start Button Logic
         startBtn.onclick = () => { 
             startNFC(); 
+            requestWakeLock();
             startBtn.style.display = 'none'; 
         };
 
+        // 4. NFC Polling Logic
         async function startNFC() {
             if ("NDEFReader" in window) {
                 try {
                     const ndef = new NDEFReader();
                     await ndef.scan();
                     statusDisplay.innerText = "Ready to Scan";
-                    subStatus.innerText = "Always polling active";
+                    subStatus.innerText = "NFC Polling Active";
 
                     ndef.onreading = async ({ serialNumber }) => {
-                        if (isLocked) return; // Prevent double-scans for 5 seconds
+                        if (isLocked) return; 
                         
                         processScan(serialNumber);
                         
-                        // 5-second lockout logic
+                        // 5-second lockout
                         isLocked = true;
                         const originalSubText = subStatus.innerText;
-                        subStatus.innerText = "Wait 5 seconds...";
+                        subStatus.innerText = "Scanning Paused (5s Cooldown)...";
                         
                         setTimeout(() => { 
                             isLocked = false; 
-                            subStatus.innerText = activeSessionTagId ? "Waiting to Clock Out..." : "Ready to Scan";
+                            subStatus.innerText = activeSessionTagId ? "Waiting to Clock Out..." : "NFC Polling Active";
                         }, 5000);
                     };
                 } catch (error) {
@@ -99,33 +116,35 @@
                 }
             } else {
                 statusDisplay.innerText = "Unsupported Browser";
-                subStatus.innerText = "Please use Chrome on Android.";
+                subStatus.innerText = "Web NFC requires Chrome on Android.";
             }
         }
 
+        // 5. Session Logic (Clock In/Out)
         function processScan(id) {
             if (!activeSessionTagId) {
-                // ACTION: CLOCK IN
+                // CLOCK IN
                 activeSessionTagId = id;
                 body.classList.add('amber');
                 statusDisplay.innerText = "Clocked In";
                 sendToSheets(id, "IN");
             } else if (activeSessionTagId === id) {
-                // ACTION: CLOCK OUT
+                // CLOCK OUT (Must be same tag)
                 activeSessionTagId = null;
                 body.classList.remove('amber');
                 statusDisplay.innerText = "Clocked Out";
                 sendToSheets(id, "OUT");
             } else {
-                // WRONG TAG ATTEMPTED TO CLOCK OUT
+                // WRONG TAG
                 const previousText = statusDisplay.innerText;
-                statusDisplay.innerText = "Access Denied: Wrong Tag";
-                setTimeout(() => { statusDisplay.innerText = previousText; }, 3000);
+                statusDisplay.innerText = "Wrong Tag!";
+                setTimeout(() => { statusDisplay.innerText = previousText; }, 2000);
             }
         }
 
+        // 6. Data Transfer
         async function sendToSheets(id, action) {
-            const WEB_APP_URL = "YOUR_GOOGLE_SCRIPT_URL"; 
+            const WEB_APP_URL = "YOUR_GOOGLE_SCRIPT_URL"; // REPLACE THIS
             try {
                 await fetch(WEB_APP_URL, {
                     method: 'POST',
@@ -135,9 +154,14 @@
             } catch (e) {
                 console.error("Sheet Sync Failed", e);
             }
-        } if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js');
-  }
+        }
+
+        // Re-request Wake Lock if user switches back to the app
+        document.addEventListener('visibilitychange', async () => {
+            if (wakeLock !== null && document.visibilityState === 'visible') {
+                requestWakeLock();
+            }
+        });
     </script>
 </body>
 </html>
