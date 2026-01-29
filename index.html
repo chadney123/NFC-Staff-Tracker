@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NFC Attendance</title>
+    <style>
+        /* Base state is Green */
+        body { 
+            transition: background-color 0.6s ease; 
+            background-color: #2ecc71; 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            justify-content: center; 
+            height: 100vh; 
+            margin: 0; 
+            color: white;
+            text-align: center;
+        }
+        /* Active session state is Light Amber */
+        .amber { 
+            background-color: #f39c12 !important; 
+        }
+        #status { 
+            font-size: 1.8rem; 
+            padding: 20px;
+            text-shadow: 1px 1px 4px rgba(0,0,0,0.2);
+        }
+        #sub-status {
+            font-size: 1rem;
+            opacity: 0.8;
+            margin-top: 10px;
+        }
+        button { 
+            padding: 15px 40px; 
+            font-size: 1.2rem; 
+            cursor: pointer; 
+            border: none; 
+            border-radius: 50px;
+            background: white;
+            color: #2ecc71;
+            font-weight: bold;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body>
+    <div id="status">System Standby</div>
+    <div id="sub-status">Tap the button to enable NFC polling</div>
+    <br>
+    <button id="startBtn">Start System</button>
+
+    <script>
+        const body = document.body;
+        const statusDisplay = document.getElementById('status');
+        const subStatus = document.getElementById('sub-status');
+        const startBtn = document.getElementById('startBtn');
+        
+        let activeSessionTagId = null; 
+        let isLocked = false;
+
+        startBtn.onclick = () => { 
+            startNFC(); 
+            startBtn.style.display = 'none'; 
+        };
+
+        async function startNFC() {
+            if ("NDEFReader" in window) {
+                try {
+                    const ndef = new NDEFReader();
+                    await ndef.scan();
+                    statusDisplay.innerText = "Ready to Scan";
+                    subStatus.innerText = "Always polling active";
+
+                    ndef.onreading = async ({ serialNumber }) => {
+                        if (isLocked) return; // Prevent double-scans for 5 seconds
+                        
+                        processScan(serialNumber);
+                        
+                        // 5-second lockout logic
+                        isLocked = true;
+                        const originalSubText = subStatus.innerText;
+                        subStatus.innerText = "Wait 5 seconds...";
+                        
+                        setTimeout(() => { 
+                            isLocked = false; 
+                            subStatus.innerText = activeSessionTagId ? "Waiting to Clock Out..." : "Ready to Scan";
+                        }, 5000);
+                    };
+                } catch (error) {
+                    statusDisplay.innerText = "Hardware Error";
+                    subStatus.innerText = error.message;
+                }
+            } else {
+                statusDisplay.innerText = "Unsupported Browser";
+                subStatus.innerText = "Please use Chrome on Android.";
+            }
+        }
+
+        function processScan(id) {
+            if (!activeSessionTagId) {
+                // ACTION: CLOCK IN
+                activeSessionTagId = id;
+                body.classList.add('amber');
+                statusDisplay.innerText = "Clocked In";
+                sendToSheets(id, "IN");
+            } else if (activeSessionTagId === id) {
+                // ACTION: CLOCK OUT
+                activeSessionTagId = null;
+                body.classList.remove('amber');
+                statusDisplay.innerText = "Clocked Out";
+                sendToSheets(id, "OUT");
+            } else {
+                // WRONG TAG ATTEMPTED TO CLOCK OUT
+                const previousText = statusDisplay.innerText;
+                statusDisplay.innerText = "Access Denied: Wrong Tag";
+                setTimeout(() => { statusDisplay.innerText = previousText; }, 3000);
+            }
+        }
+
+        async function sendToSheets(id, action) {
+            const WEB_APP_URL = "YOUR_GOOGLE_SCRIPT_URL"; 
+            try {
+                await fetch(WEB_APP_URL, {
+                    method: 'POST',
+                    mode: 'no-cors',
+                    body: JSON.stringify({ id, action })
+                });
+            } catch (e) {
+                console.error("Sheet Sync Failed", e);
+            }
+        }
+    </script>
+</body>
+</html>
